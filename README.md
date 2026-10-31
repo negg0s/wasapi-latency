@@ -28,12 +28,42 @@ pip install -e . --no-cache-dir
 Dependencies are `click` and `sounddevice`. `sounddevice` ships its own PortAudio
 DLL on Windows, so no separate PortAudio install is needed.
 
+## Check your default output
+
+After installation, open PowerShell and run:
+
+```powershell
+wasapi-latency check
+```
+
+Example:
+
+```
+Default output: 8 - Speakers (Realtek(R) Audio)
+Host API: Windows WASAPI
+Sample rate: 48000 Hz
+Driver-reported buffer latency: 3.00 ms low, 10.00 ms high
+This is not total game or audio latency. It is not a playback test.
+No audio was played and no Windows settings were changed.
+```
+
+The command reads the default output reported by WASAPI. The low and high
+values come from the audio driver. They do not measure delay from a game to your
+headphones, and they do not tell you whether audio will crackle. The command
+does not play sound, record audio, or change any Windows setting. If no default
+output is set, choose one in Windows Settings under System, then Sound, and run
+the command again.
+
+To see the default microphone too, run `wasapi-latency info`. To see all
+WASAPI devices, run `wasapi-latency list`.
+
 ## Commands
 
 ```
 wasapi-latency list [--hostapi TEXT] [--json | --csv]
 wasapi-latency info [--json]
 wasapi-latency measure [--device INT] [--direction auto|input|output] [--json]
+wasapi-latency check
 wasapi-latency profiles [--rate INT] [--json]
 wasapi-latency recommend --profile NAME [--device INT] [--json]
 wasapi-latency doctor
@@ -45,6 +75,9 @@ host API index, or `all`.
 `measure` uses the default WASAPI output device when `--device` is omitted. With
 `--direction auto` it reports output latency when the device has output channels
 and input latency otherwise.
+
+`check` reports the default WASAPI output and its driver-reported buffer
+latency. It does not open a stream or change Windows settings.
 
 `recommend` uses the same default device rule and the profile frame counts below.
 

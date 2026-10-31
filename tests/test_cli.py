@@ -220,6 +220,26 @@ def test_measure_default_output(fake_sd, runner):
     assert "High buffer latency: 10.00 ms (480 frames)" in result.output
 
 
+def test_check_default_output_explains_report_without_changing_settings(fake_sd, runner):
+    result = invoke(runner, ["check"])
+    assert result.exit_code == 0, result.output
+    assert "Default output: 2 - Speakers (WASAPI)" in result.output
+    assert "Driver-reported buffer latency: 3.00 ms low, 10.00 ms high" in result.output
+    assert "This is not total game or audio latency" in result.output
+    assert "No audio was played and no Windows settings were changed" in result.output
+
+
+def test_check_default_output_requires_default_output(runner, monkeypatch):
+    module = make_fake_sd(
+        hostapis=[{"name": "Windows WASAPI", "devices": [2], "default_input_device": 3, "default_output_device": -1}]
+    )
+    monkeypatch.setattr(core, "sd", module)
+    result = invoke(runner, ["check"])
+    assert result.exit_code == 1
+    assert "No default WASAPI output device is set" in result.output
+    assert "Windows Settings > System > Sound" in result.output
+
+
 def test_measure_selected_input(fake_sd, runner):
     result = invoke(runner, ["measure", "--device", "3"])
     assert result.exit_code == 0, result.output
@@ -362,5 +382,5 @@ def test_doctor_sounddevice_missing(runner, monkeypatch):
 def test_help_lists_commands(runner):
     result = invoke(runner, ["--help"])
     assert result.exit_code == 0
-    for command in ("list", "info", "measure", "profiles", "recommend", "doctor"):
+    for command in ("list", "info", "measure", "check", "profiles", "recommend", "doctor"):
         assert command in result.output

@@ -31,5 +31,6 @@ jobs:
           python -m wasapi_latency list --help
           python -m wasapi_latency info --help
           python -m wasapi_latency measure --help
+          python -m wasapi_latency check --help
           python -m wasapi_latency recommend --help
           python -m wasapi_latency doctor --help

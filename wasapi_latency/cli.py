@@ -270,5 +270,30 @@ def doctor():
         click.get_current_context().exit(1)
 
 
+@main.command()
+def check():
+    """Check the current default WASAPI output device."""
+    try:
+        report = core.defaults_report()
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+    output = report["output"]
+    if output is None:
+        _fail(
+            "No default WASAPI output device is set. Choose a playback device "
+            "in Windows Settings > System > Sound, then run this command again."
+        )
+
+    click.echo("Default output: %d - %s" % (output["device"], output["name"]))
+    click.echo("Host API: %s" % (output["hostapi_name"] or "unknown"))
+    click.echo("Sample rate: %s Hz" % _fmt_number(output["sample_rate"]))
+    click.echo(
+        "Driver-reported buffer latency: %s ms low, %s ms high"
+        % (_fmt_ms(output["low_latency_ms"]), _fmt_ms(output["high_latency_ms"]))
+    )
+    click.echo("This is not total game or audio latency. It is not a playback test.")
+    click.echo("No audio was played and no Windows settings were changed.")
+
+
 if __name__ == "__main__":
     main()
