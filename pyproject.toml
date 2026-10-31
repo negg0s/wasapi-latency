@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wasapi-latency"
-version = "0.1.0"
-description = "Inspect and tune Windows WASAPI buffer latency from the CLI."
+dynamic = ["version"]
+description = "Inspect Windows WASAPI devices and buffer latency from the CLI."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -14,8 +14,14 @@ dependencies = [
     "sounddevice>=0.4",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 wasapi-latency = "wasapi_latency.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "wasapi_latency.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

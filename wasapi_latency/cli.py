@@ -1,123 +1,273 @@
-"""Command-line interface for wasapi_latency."""
-
-import json
-import sys
-
-try:
-    import sounddevice as sd
-except Exception:  # pragma: no cover
-    sd = None
+"""Command-line interface for wasapi-latency."""
 
 import click
 
-from . import core
+from . import __version__, core
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
-@click.group(context_settings=CONTEXT_SETTINGS)
-@click.version_option(version="0.1.0", prog_name="wasapi-latency")
-def main():
-    """Inspect and tune Windows WASAPI buffer latency."""
-
-
-@main.command()
-def info():
-    """Show Windows WASAPI host API and default devices."""
-    sd_mod = core.get_sd()
-    idx, host = core.find_wasapi_hostapi(sd_mod)
-    click.echo("Host API: %s (index %d)" % (host.get("name", host) if isinstance(host, dict) else host, idx))
-    inp_idx, out_idx = core.default_device_indices(sd_mod)
-
-    def show(label, dev_index, kind):
-        if dev_index is None:
-            click.echo("%s device: (none)" % label)
-            return
-        _, dev = core.query_device(sd_mod, dev_index)
-        in_ch, out_ch = core.device_channels(dev)
-        sr = core.device_sample_rate(dev)
-        lows = core.latency_ms(dev, kind=kind, level="low")
-        highs = core.latency_ms(dev, kind=kind, level="high")
-        click.echo("%s device: %s - %s" % (label, dev_index, core.device_name(dev)))
-        click.echo("  sample rate: %s Hz" % _fmt_number(sr))
-        click.echo("  channels: %d in / %d out" % (in_ch, out_ch))
-        click.echo("  low latency: %.2f ms" % lows)
-        click.echo("  high latency: %.2f ms" % highs)
-
-    show("Default input", inp_idx, "input")
-    show("Default output", out_idx, "output")
-
-
-@main.command()
-@click.option("--device", "device", type=int, default=None, help="Device index to measure.")
-def measure(device):
-    """Report buffer latency for an output device."""
-    sd_mod = core.get_sd()
-    target = device
-    if target is None:
-        _, target = core.default_device_indices(sd_mod)
-    idx, dev = core.query_device(sd_mod, target)
-    in_ch, out_ch = core.device_channels(dev)
-    sr = core.device_sample_rate(dev)
-    lows = core.latency_ms(dev, kind="output", level="low")
-    highs = core.latency_ms(dev, kind="output", level="high")
-    channels = out_ch if out_ch > 0 else in_ch
-    click.echo("Device: %s - %s" % (idx, core.device_name(dev)))
-    click.echo("Sample rate: %s Hz" % _fmt_number(sr))
-    click.echo("Channels: %d" % channels)
-    click.echo("Low buffer latency: %.2f ms" % lows)
-    click.echo("High buffer latency: %.2f ms" % highs)
-
-
-@main.command()
-def profiles():
-    """Table of recommended WASAPI buffer profiles at 48 kHz."""
-    click.echo("%-12s %8s %10s" % ("Profile", "Frames", "ms@48k"))
-    click.echo("%-12s %8s %10s" % ("-" * 12, "-" * 8, "-" * 10))
-    for name in core.PROFILE_ORDER:
-        frames = core.PROFILES[name]
-        ms = core.frames_to_ms(frames, core.DEFAULT_SAMPLE_RATE)
-        click.echo("%-12s %8d %10.2f" % (name, frames, ms))
-
-
-@main.command()
-@click.option("--profile", "profile", required=True, help="Profile name.")
-@click.option("--device", "device", type=int, default=None, help="Device index.")
-@click.option("--json", "as_json", is_flag=True, help="Output JSON.")
-def recommend(profile, device, as_json):
-    """Recommend a WASAPI buffer profile for a device."""
+def _fmt_number(value):
     try:
-        result = core.recommend(profile, device_index=device)
-    except ValueError as exc:
-        raise click.ClickException(str(exc))
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number.is_integer():
+        return str(int(number))
+    return "%.2f" % number
+
+
+def _fmt_ms(value):
+    return "%.2f" % value
+
+
+def _table(headers, rows, right_align=()):
+    widths = [len(str(header)) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(str(cell)))
+
+    def render(cells):
+        parts = []
+        for index, cell in enumerate(cells):
+            text = str(cell)
+            if headers[index] in right_align:
+                text = text.rjust(widths[index])
+            else:
+                text = text.ljust(widths[index])
+            parts.append(text)
+        return "  ".join(parts).rstrip()
+
+    lines = [render(headers), render(["-" * width for width in widths])]
+    lines.extend(render(row) for row in rows)
+    return "\n".join(lines)
+
+
+def _fail(message):
+    raise click.ClickException(str(message))
+
+
+def _latency_pair(row):
+    if row["output_channels"] > 0:
+        return "output", row["low_output_ms"], row["high_output_ms"]
+    return "input", row["low_input_ms"], row["high_input_ms"]
+
+
+@click.group(context_settings=CONTEXT_SETTINGS)
+@click.version_option(version=__version__, prog_name="wasapi-latency")
+def main():
+    """Inspect Windows WASAPI devices and buffer latency."""
+
+
+@main.command("list")
+@click.option(
+    "--hostapi",
+    "hostapi",
+    default="wasapi",
+    show_default=True,
+    help="Host API name, index, or 'all'.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+@click.option("--csv", "as_csv", is_flag=True, help="Print CSV.")
+def list_command(hostapi, as_json, as_csv):
+    """List audio devices for a host API."""
+    if as_json and as_csv:
+        _fail("Use either --json or --csv, not both.")
+    try:
+        rows = core.list_devices(hostapi)
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+
+    if as_json:
+        click.echo(core.to_json(rows))
+        return
+    if as_csv:
+        click.echo(_to_csv(rows))
+        return
+
+    table_rows = []
+    for row in rows:
+        direction, low_ms, high_ms = _latency_pair(row)
+        default = []
+        if row["default_input"]:
+            default.append("in")
+        if row["default_output"]:
+            default.append("out")
+        table_rows.append(
+            [
+                row["index"],
+                row["hostapi_name"] or "",
+                direction,
+                row["input_channels"],
+                row["output_channels"],
+                _fmt_number(row["sample_rate"]),
+                _fmt_ms(low_ms),
+                _fmt_ms(high_ms),
+                ",".join(default),
+                row["name"],
+            ]
+        )
+    click.echo(
+        _table(
+            ["IDX", "HOST", "DIR", "IN", "OUT", "RATE", "LOW ms", "HIGH ms", "DEFAULT", "NAME"],
+            table_rows,
+            right_align=("IDX", "IN", "OUT", "RATE", "LOW ms", "HIGH ms"),
+        )
+    )
+
+
+CSV_COLUMNS = (
+    "index",
+    "hostapi",
+    "hostapi_name",
+    "name",
+    "input_channels",
+    "output_channels",
+    "sample_rate",
+    "low_input_ms",
+    "high_input_ms",
+    "low_output_ms",
+    "high_output_ms",
+    "default_input",
+    "default_output",
+)
+
+
+def _to_csv(rows):
+    import csv
+    import io
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return buffer.getvalue().rstrip("\r\n")
+
+
+def _print_device_report(prefix, report):
+    if report is None:
+        click.echo("%s: none" % prefix)
+        return
+    click.echo(
+        "%s: %d - %s (%s)"
+        % (prefix, report["device"], report["name"], report["hostapi_name"] or "unknown host API")
+    )
+    click.echo("  direction: %s" % report["direction"])
+    click.echo("  sample rate: %s Hz" % _fmt_number(report["sample_rate"]))
+    click.echo("  channels: %d" % report["channels"])
+    click.echo("  low latency: %s ms" % _fmt_ms(report["low_latency_ms"]))
+    click.echo("  high latency: %s ms" % _fmt_ms(report["high_latency_ms"]))
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+def info(as_json):
+    """Show the WASAPI host API and its default devices."""
+    try:
+        report = core.defaults_report()
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+    if as_json:
+        click.echo(core.to_json(report))
+        return
+    click.echo("Host API: %s (index %d)" % (report["hostapi_name"], report["hostapi"]))
+    _print_device_report("Default input", report["input"])
+    _print_device_report("Default output", report["output"])
+
+
+@main.command()
+@click.option("--device", "device", type=int, default=None, help="Device index (default: default output).")
+@click.option(
+    "--direction",
+    type=click.Choice(["auto", "input", "output"]),
+    default="auto",
+    show_default=True,
+    help="Latency direction.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+def measure(device, direction, as_json):
+    """Report buffer latency for one device."""
+    try:
+        report = core.measure(device, direction)
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+    if as_json:
+        click.echo(core.to_json(report))
+        return
+    click.echo("Device: %d - %s" % (report["device"], report["name"]))
+    click.echo("Host API: %s" % (report["hostapi_name"] or "unknown"))
+    click.echo("Direction: %s" % report["direction"])
+    click.echo("Sample rate: %s Hz" % _fmt_number(report["sample_rate"]))
+    click.echo("Channels: %d" % report["channels"])
+    click.echo("Low buffer latency: %s ms (%d frames)" % (_fmt_ms(report["low_latency_ms"]), report["low_buffer_frames"]))
+    click.echo(
+        "High buffer latency: %s ms (%d frames)"
+        % (_fmt_ms(report["high_latency_ms"]), report["high_buffer_frames"])
+    )
+
+
+@main.command()
+@click.option("--rate", "sample_rate", type=click.IntRange(min=1), default=core.DEFAULT_SAMPLE_RATE, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+def profiles(sample_rate, as_json):
+    """Show the buffer profiles used by recommend."""
+    rows = core.profile_rows(sample_rate)
+    if as_json:
+        click.echo(core.to_json({"sample_rate": sample_rate, "profiles": rows}))
+        return
+    table_rows = [
+        [row["profile"], row["frames"], _fmt_ms(row["latency_ms"])]
+        for row in rows
+    ]
+    click.echo("Sample rate: %s Hz" % _fmt_number(sample_rate))
+    click.echo(
+        _table(
+            ["PROFILE", "FRAMES", "LATENCY ms"],
+            table_rows,
+            right_align=("FRAMES", "LATENCY ms"),
+        )
+    )
+
+
+@main.command()
+@click.option("--profile", type=click.Choice(core.PROFILE_ORDER), required=True, help="Profile name.")
+@click.option("--device", "device", type=int, default=None, help="Device index (default: default output).")
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+def recommend(profile, device, as_json):
+    """Show the buffer size for a profile on a device."""
+    try:
+        result = core.recommend(profile, device)
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
     if as_json:
         click.echo(core.to_json(result))
-    else:
-        click.echo("Profile: %s" % result["profile"])
-        click.echo("Frames: %d" % result["frames"])
-        click.echo("Latency: %.2f ms" % result["ms"])
-        click.echo("Device: %s - %s" % (result["device"], result["device_name"]))
-        click.echo("Sample rate: %s Hz" % _fmt_number(result["sample_rate"]))
-        click.echo("Channels: %d" % result["channels"])
+        return
+    click.echo("Profile: %s" % result["profile"])
+    click.echo("Frames: %d" % result["frames"])
+    click.echo("Latency: %s ms" % _fmt_ms(result["latency_ms"]))
+    click.echo("Device: %d - %s" % (result["device"], result["name"]))
+    click.echo("Host API: %s" % (result["hostapi_name"] or "unknown"))
+    click.echo("Direction: %s" % result["direction"])
+    click.echo("Sample rate: %s Hz" % _fmt_number(result["sample_rate"]))
+    click.echo("Channels: %d" % result["channels"])
+    click.echo("Device low latency: %s ms" % _fmt_ms(result["device_low_latency_ms"]))
+    click.echo("Device high latency: %s ms" % _fmt_ms(result["device_high_latency_ms"]))
 
 
 @main.command()
 def doctor():
-    """Check sounddevice import and WASAPI availability."""
-    ok, messages = core.doctor()
-    for msg in messages:
-        click.echo(msg)
-    if not ok:
-        raise click.ClickException("Doctor check failed")
-
-
-def _fmt_number(value):
-    try:
-        if float(value).is_integer():
-            return str(int(value))
-    except (TypeError, ValueError):
-        pass
-    return str(value)
+    """Check sounddevice, WASAPI, and default devices."""
+    checks = core.doctor()
+    for check in checks:
+        status = "ok" if check["ok"] else "fail"
+        click.echo("[%s] %s: %s" % (status, check["name"], check["detail"]))
+        if not check["ok"] and check["hint"]:
+            click.echo("       hint: %s" % check["hint"])
+    passed = sum(1 for check in checks if check["ok"])
+    click.echo("doctor: %d/%d checks passed" % (passed, len(checks)))
+    if passed != len(checks):
+        click.get_current_context().exit(1)
 
 
 if __name__ == "__main__":
