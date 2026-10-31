@@ -58,8 +58,8 @@ arguments.
 ```
 IDX  HOST            DIR     IN  OUT    RATE  LOW ms  HIGH ms  DEFAULT  NAME
 ---  --------------  ------  --  ---  ------  ------  -------  -------  ---------------------------
-  8  Windows WASAPI  output   0    2   48000    3.00    10.00  out      Динамики (Realtek(R) Audio)
-  9  Windows WASAPI  input    2    0  192000    3.00    10.00  in       Микрофон (Realtek(R) Audio)
+  8  Windows WASAPI  output   0    2   48000    3.00    10.00  out      Speakers (Realtek(R) Audio)
+  9  Windows WASAPI  input    2    0  192000    3.00    10.00  in       Microphone (Realtek(R) Audio)
 ```
 
 `DIR`, `LOW ms` and `HIGH ms` describe the direction used in the table: output
@@ -70,13 +70,13 @@ values for both directions.
 
 ```
 Host API: Windows WASAPI (index 2)
-Default input: 9 - Микрофон (Realtek(R) Audio) (Windows WASAPI)
+Default input: 9 - Microphone (Realtek(R) Audio) (Windows WASAPI)
   direction: input
   sample rate: 192000 Hz
   channels: 2
   low latency: 3.00 ms
   high latency: 10.00 ms
-Default output: 8 - Динамики (Realtek(R) Audio) (Windows WASAPI)
+Default output: 8 - Speakers (Realtek(R) Audio) (Windows WASAPI)
   direction: output
   sample rate: 48000 Hz
   channels: 2
@@ -89,7 +89,7 @@ Default output: 8 - Динамики (Realtek(R) Audio) (Windows WASAPI)
 ```json
 {
   "device": 8,
-  "name": "Динамики (Realtek(R) Audio)",
+  "name": "Speakers (Realtek(R) Audio)",
   "hostapi": 2,
   "hostapi_name": "Windows WASAPI",
   "direction": "output",
