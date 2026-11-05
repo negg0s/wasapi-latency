@@ -337,6 +337,15 @@ def test_recommend_unknown_profile(fake_sd, runner):
     assert "Invalid value" in result.output
 
 
+def test_doctor_json_ok(fake_sd, runner):
+    result = invoke(runner, ["doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["passed"] == 6
+    assert payload["total"] == 6
+    assert len(payload["checks"]) == 6
+
+
 def test_doctor_ok(fake_sd, runner):
     result = invoke(runner, ["doctor"])
     assert result.exit_code == 0, result.output

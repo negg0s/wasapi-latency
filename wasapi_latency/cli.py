@@ -256,15 +256,26 @@ def recommend(profile, device, as_json):
 
 
 @main.command()
-def doctor():
+@click.option("--json", "as_json", is_flag=True, help="Print JSON.")
+def doctor(as_json):
     """Check sounddevice, WASAPI, and default devices."""
     checks = core.doctor()
+    passed = sum(1 for check in checks if check["ok"])
+    if as_json:
+        payload = {
+            "checks": checks,
+            "passed": passed,
+            "total": len(checks),
+        }
+        click.echo(core.to_json(payload))
+        if passed != len(checks):
+            click.get_current_context().exit(1)
+        return
     for check in checks:
         status = "ok" if check["ok"] else "fail"
         click.echo("[%s] %s: %s" % (status, check["name"], check["detail"]))
         if not check["ok"] and check["hint"]:
             click.echo("       hint: %s" % check["hint"])
-    passed = sum(1 for check in checks if check["ok"])
     click.echo("doctor: %d/%d checks passed" % (passed, len(checks)))
     if passed != len(checks):
         click.get_current_context().exit(1)
