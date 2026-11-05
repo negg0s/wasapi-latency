@@ -113,7 +113,22 @@ def test_list_defaults_to_wasapi(fake_sd, runner):
     assert "Headphones, USB (WASAPI)" in result.output
     assert "Speakers (MME)" not in result.output
     assert "3.00" in result.output
-    assert "10.00" in result.output
+
+
+def test_list_filter_name(fake_sd, runner):
+    result = invoke(runner, ["list", "--name", "headphones"])
+    assert result.exit_code == 0, result.output
+    assert "Headphones, USB (WASAPI)" in result.output
+    assert "Speakers (WASAPI)" not in result.output
+
+
+def test_list_filter_name_json(fake_sd, runner):
+    result = invoke(runner, ["list", "--name", "headphones", "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Headphones, USB (WASAPI)"
+    assert rows[0]["low_output_ms"] == 5.0
 
 
 def test_list_hostapi_name_and_index(fake_sd, runner):

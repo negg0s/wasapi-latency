@@ -67,9 +67,10 @@ def main():
     show_default=True,
     help="Host API name, index, or 'all'.",
 )
+@click.option("--name", "name_filter", default=None, help="Filter devices by name substring.")
 @click.option("--json", "as_json", is_flag=True, help="Print JSON.")
 @click.option("--csv", "as_csv", is_flag=True, help="Print CSV.")
-def list_command(hostapi, as_json, as_csv):
+def list_command(hostapi, name_filter, as_json, as_csv):
     """List audio devices for a host API."""
     if as_json and as_csv:
         _fail("Use either --json or --csv, not both.")
@@ -77,6 +78,9 @@ def list_command(hostapi, as_json, as_csv):
         rows = core.list_devices(hostapi)
     except (RuntimeError, ValueError) as exc:
         _fail(exc)
+
+    if name_filter:
+        rows = [row for row in rows if name_filter.lower() in str(row.get("name", "")).lower()]
 
     if as_json:
         click.echo(core.to_json(rows))
