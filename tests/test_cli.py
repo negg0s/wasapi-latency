@@ -408,3 +408,134 @@ def test_help_lists_commands(runner):
     assert result.exit_code == 0
     for command in ("list", "info", "measure", "check", "profiles", "recommend", "doctor"):
         assert command in result.output
+
+
+def test_zero_and_negative_frequency_frames_math():
+    assert core.frames_to_ms(128, 0) == 0.0
+    assert core.frames_to_ms(128, -48000) == 0.0
+    assert core.frames_to_ms(0, 48000) == 0.0
+    assert core.frames_to_ms(None, 48000) == 0.0
+    assert core.frames_to_ms(128, "invalid") == 0.0
+
+    assert core.ms_to_frames(10.0, 0) == 0
+    assert core.ms_to_frames(10.0, -48000) == 0
+    assert core.ms_to_frames(0.0, 48000) == 0
+    assert core.ms_to_frames(None, 48000) == 0
+    assert core.ms_to_frames(10.0, "invalid") == 0
+
+
+def test_device_sample_rate_fallback():
+    assert core.device_sample_rate({}) == float(core.DEFAULT_SAMPLE_RATE)
+    assert core.device_sample_rate({"default_samplerate": 0}) == float(core.DEFAULT_SAMPLE_RATE)
+    assert core.device_sample_rate({"default_samplerate": -1000}) == float(core.DEFAULT_SAMPLE_RATE)
+    assert core.device_sample_rate({"default_samplerate": "invalid"}) == float(core.DEFAULT_SAMPLE_RATE)
+    assert core.device_sample_rate("non-dict") == float(core.DEFAULT_SAMPLE_RATE)
+    assert core.device_sample_rate({"sample_rate": 96000}) == 96000.0
+
+
+def test_device_channels_and_latency_bounds():
+    assert core.device_channels("not a map") == (0, 0)
+    assert core.device_channels({"max_input_channels": -5, "max_output_channels": "abc"}) == (0, 0)
+    assert core.latency_ms("not a map") == 0.0
+    assert core.latency_ms({"default_low_output_latency": -0.01}) == 0.0
+    assert core.latency_ms({"default_low_output_latency": "bad"}) == 0.0
+
+
+def test_profile_rows_with_zero_sample_rate():
+    rows = core.profile_rows(0)
+    assert len(rows) == len(core.PROFILES)
+    for row in rows:
+        assert row["latency_ms"] > 0.0
+
+
+def test_measure_zero_sample_rate_device():
+    mock_sd = types.SimpleNamespace(__version__="0.5.5")
+    mock_sd.query_devices = lambda idx=None: {
+        "name": "Zero Hz Device",
+        "hostapi": 0,
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 0.0,
+        "default_low_output_latency": 0.01,
+        "default_high_output_latency": 0.02,
+    }
+    mock_sd.query_hostapis = lambda: [{"name": "Windows WASAPI", "devices": [0]}]
+    res = core.measure(0, "output", mock_sd)
+    assert res["sample_rate"] == float(core.DEFAULT_SAMPLE_RATE)
+    assert res["low_buffer_frames"] > 0
+
+
+def test_measure_unsupported_format():
+    mock_sd = types.SimpleNamespace(__version__="0.5.5")
+    mock_sd.query_devices = lambda idx=None: {
+        "name": "Strict Device",
+        "hostapi": 0,
+        "max_input_channels": 0,
+        "max_output_channels": 2,
+        "default_samplerate": 48000.0,
+        "default_low_output_latency": 0.01,
+        "default_high_output_latency": 0.02,
+    }
+    mock_sd.query_hostapis = lambda: [{"name": "Windows WASAPI", "devices": [0]}]
+
+    def check_out(device, channels, samplerate):
+        raise ValueError("Invalid format settings: unsupported sample rate")
+
+    mock_sd.check_output_settings = check_out
+
+    with pytest.raises(ValueError, match="does not support format"):
+        core.measure(0, "output", mock_sd)
+
+
+def test_list_devices_skips_disconnected_device():
+    mock_sd = types.SimpleNamespace(__version__="0.5.5")
+    mock_sd.query_hostapis = lambda: [{"name": "Windows WASAPI", "devices": [0, 1]}]
+
+    def query(idx=None):
+        if idx == 0:
+            return {
+                "name": "Active Device",
+                "hostapi": 0,
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            }
+        raise RuntimeError("Device unplugged")
+
+    mock_sd.query_devices = query
+
+    rows = core.list_devices("wasapi", mock_sd)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Active Device"
+
+
+def test_defaults_report_handles_disabled_device():
+    mock_sd = types.SimpleNamespace(__version__="0.5.5")
+    mock_sd.query_hostapis = lambda: [{
+        "name": "Windows WASAPI",
+        "devices": [0],
+        "default_input_device": 1,
+        "default_output_device": 0,
+    }]
+
+    def query(idx=None):
+        if idx == 0:
+            return {
+                "name": "Speakers",
+                "hostapi": 0,
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+                "default_samplerate": 48000.0,
+            }
+        raise RuntimeError("Input device disabled")
+
+    mock_sd.query_devices = query
+
+    rep = core.defaults_report(mock_sd)
+    assert rep["output"] is not None
+    assert rep["input"] is None
+
+
+def test_com_initialized_context():
+    with core.com_initialized() as ok:
+        assert isinstance(ok, bool)
