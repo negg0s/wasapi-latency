@@ -1,6 +1,8 @@
 """Device, latency and profile helpers for wasapi-latency."""
 
+import contextlib
 import json
+import sys
 from collections.abc import Mapping
 
 PROFILES = {
@@ -26,6 +28,29 @@ def get_sd():
     except Exception as exc:
         raise RuntimeError("sounddevice is not installed: %s" % exc) from exc
     return module
+
+
+@contextlib.contextmanager
+def com_initialized(coinit_flags=2):
+    """Context manager ensuring COM is initialized and safely uninitialized on Windows."""
+    if sys.platform != "win32":
+        yield False
+        return
+    import ctypes
+    initialized = False
+    try:
+        hr = ctypes.windll.ole32.CoInitializeEx(None, coinit_flags)
+        initialized = hr in (0, 1)
+    except Exception:
+        initialized = False
+    try:
+        yield initialized
+    finally:
+        if initialized:
+            try:
+                ctypes.windll.ole32.CoUninitialize()
+            except Exception:
+                pass
 
 
 def to_json(value):
@@ -104,15 +129,26 @@ def device_sample_rate(device):
         for key in ("default_samplerate", "default_sample_rate", "samplerate", "sample_rate"):
             value = device.get(key)
             if value is not None:
-                return float(value)
+                try:
+                    val = float(value)
+                    if val > 0 and val == val and val != float("inf"):
+                        return val
+                except (TypeError, ValueError):
+                    pass
     return float(DEFAULT_SAMPLE_RATE)
 
 
 def device_channels(device):
     if isinstance(device, Mapping):
-        inp = int(device.get("max_input_channels", 0) or 0)
-        out = int(device.get("max_output_channels", 0) or 0)
-        return inp, out
+        try:
+            inp = int(device.get("max_input_channels", 0) or 0)
+        except (TypeError, ValueError):
+            inp = 0
+        try:
+            out = int(device.get("max_output_channels", 0) or 0)
+        except (TypeError, ValueError):
+            out = 0
+        return max(0, inp), max(0, out)
     return 0, 0
 
 
@@ -126,17 +162,33 @@ def latency_ms(device, direction="output", level="low"):
         key = "default_low_output_latency" if level == "low" else "default_high_output_latency"
     value = device.get(key, 0.0)
     try:
-        return float(value) * 1000.0
+        val = float(value) * 1000.0
+        if val < 0.0 or val != val or val == float("inf"):
+            return 0.0
+        return val
     except (TypeError, ValueError):
         return 0.0
 
 
 def frames_to_ms(frames, sample_rate=DEFAULT_SAMPLE_RATE):
-    return frames / float(sample_rate) * 1000.0
+    try:
+        sr = float(sample_rate)
+        if sr <= 0 or frames is None:
+            return 0.0
+        return max(0.0, float(frames) / sr * 1000.0)
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return 0.0
 
 
 def ms_to_frames(ms, sample_rate=DEFAULT_SAMPLE_RATE):
-    return int(round(ms / 1000.0 * sample_rate))
+    try:
+        sr = float(sample_rate)
+        if sr <= 0 or ms is None:
+            return 0
+        val = int(round(float(ms) / 1000.0 * sr))
+        return max(0, val)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def profile_frames(name):
@@ -147,11 +199,17 @@ def profile_frames(name):
 
 
 def profile_rows(sample_rate=DEFAULT_SAMPLE_RATE):
+    try:
+        sr = float(sample_rate)
+        if sr <= 0 or sr != sr or sr == float("inf"):
+            sr = float(DEFAULT_SAMPLE_RATE)
+    except (TypeError, ValueError):
+        sr = float(DEFAULT_SAMPLE_RATE)
     return [
         {
             "profile": name,
             "frames": PROFILES[name],
-            "latency_ms": frames_to_ms(PROFILES[name], sample_rate),
+            "latency_ms": frames_to_ms(PROFILES[name], sr),
         }
         for name in PROFILE_ORDER
     ]
@@ -206,7 +264,10 @@ def list_devices(hostapi="wasapi", sd_mod=None):
         default_in = info.get("default_input_device", -1) if isinstance(info, Mapping) else -1
         default_out = info.get("default_output_device", -1) if isinstance(info, Mapping) else -1
         for device_index in _device_indices(hostapi_index, info, sd_mod):
-            device = query_device(device_index, sd_mod)
+            try:
+                device = query_device(device_index, sd_mod)
+            except (ValueError, RuntimeError):
+                continue
             row = device_report(device_index, device, hostapi_index, hostapi_name)
             row["default_input"] = device_index == default_in
             row["default_output"] = device_index == default_out
@@ -217,6 +278,24 @@ def list_devices(hostapi="wasapi", sd_mod=None):
 def _latency_fields(row, direction):
     prefix = "input" if direction == "input" else "output"
     return row["low_%s_ms" % prefix], row["high_%s_ms" % prefix]
+
+
+def check_device_format(device_index, direction="output", sample_rate=None, channels=None, sd_mod=None):
+    """Check if a device supports the requested format, returning (True, None) or (False, error)."""
+    sd_mod = sd_mod or get_sd()
+    device = query_device(device_index, sd_mod)
+    inp, out = device_channels(device)
+    sr = sample_rate or device_sample_rate(device)
+    ch = channels or (out if direction == "output" else inp)
+    if ch <= 0:
+        return False, "Device %s has no %s channels" % (device_index, direction)
+    checker = getattr(sd_mod, "check_output_settings" if direction == "output" else "check_input_settings", None)
+    if callable(checker):
+        try:
+            checker(device=device_index, channels=ch, samplerate=sr)
+        except Exception as exc:
+            return False, str(exc)
+    return True, None
 
 
 def measure(device_index=None, direction="auto", sd_mod=None):
@@ -244,6 +323,10 @@ def measure(device_index=None, direction="auto", sd_mod=None):
         raise ValueError("Device %s has no output channels" % device_index)
     elif direction == "input" and inp == 0:
         raise ValueError("Device %s has no input channels" % device_index)
+
+    ok, err = check_device_format(device_index, direction, sd_mod=sd_mod)
+    if not ok and err and "format" in err.lower():
+        raise ValueError("Device %s does not support format: %s" % (device_index, err))
 
     row = device_report(device_index, device, device.get("hostapi"))
     row["hostapi_name"] = _hostapi_name(row["hostapi"], sd_mod) if row["hostapi"] is not None else None
@@ -276,9 +359,15 @@ def defaults_report(sd_mod=None):
         "output": None,
     }
     if default_in is not None:
-        report["input"] = measure(default_in, "input", sd_mod)
+        try:
+            report["input"] = measure(default_in, "input", sd_mod)
+        except (RuntimeError, ValueError):
+            report["input"] = None
     if default_out is not None:
-        report["output"] = measure(default_out, "output", sd_mod)
+        try:
+            report["output"] = measure(default_out, "output", sd_mod)
+        except (RuntimeError, ValueError):
+            report["output"] = None
     return report
 
 
